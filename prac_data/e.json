@@ -1,0 +1,48 @@
+{
+    "asset": {
+        "version": "1.0"
+    },
+    "root": {
+        "geometricError": 786432.0,
+        "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            -1,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+        ],
+        "boundingVolume": {
+            "region": [
+                0,
+                -1.5707963267948966,
+                3.141592653589793,
+                1.5707963267948966,
+                0,
+                300
+            ]
+        },
+        "implicitTiling": {
+            "availableLevels": 17,
+            "subdivisionScheme": "QUADTREE",
+            "subtreeLevels": 3,
+            "subtrees": {
+                "uri": "subtree/e/{level}/{x}/{y}.subtree"
+            }
+        },
+        "refine": "ADD",
+        "content": {
+            "uri": "content/e/{level}/{x}/{y}.glb"
+        }
+    }
+}
