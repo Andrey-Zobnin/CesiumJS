@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cesium 3D Tiles LOAD from local</title>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Cesium.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+  <style>
+    #cesiumContainer {
+      width: 100vw;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+  <script>
+    const viewer = new Cesium.Viewer('cesiumContainer');
+
+    Cesium.Cesium3DTileset.fromUrl('prac_data/tileset.json')
+      .then(tileset => {
+        viewer.scene.primitives.add(tileset);
+        viewer.zoomTo(tileset);
+        console.log('Tileset loaded');
+      })
+      .catch(error => {
+        console.error('Failed to load tileset:', error);
+      });
+  </script>
+</body>
+</html>
