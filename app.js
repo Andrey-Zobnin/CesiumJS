@@ -33,23 +33,34 @@ function updateAutoLod() {
   lodDisplayEl.textContent = lodFactorVal.toFixed(2);
 }
 
+// === Dynamic polyline width at high altitudes ===
+// refactor: Make polylines thicker as camera height increases to stay visible
+function getDynamicLineWidth(cameraHeight) {
+  // 5px at low altitude, up to 18px at high altitude (adjust as needed)
+  if (cameraHeight < 2000) return 5;
+  if (cameraHeight > 4000000) return 18;
+  return 5 + (cameraHeight - 2000) * (18 - 5) / (4000000 - 2000);
+}
+
 // === Polyline LOD simplification helper ===
-// refactor: extracted simplification into its own function for clarity and reuse
+// refactor: Always include endpoints to reduce cracks in simplified lines
 function simplifyLineLOD(line, lodFactor) {
-  // refactor: Subsamples points per line according to LOD
   const pointCount = Math.max(2, Math.ceil(line.length * lodFactor));
   if (line.length <= 2 || pointCount >= line.length) return line;
   const step = (line.length - 1) / (pointCount - 1);
   const simplified = [];
   for (let i = 0; i < pointCount; i++) {
-    const idx = Math.round(i * step);
+    let idx = Math.round(i * step);
+    // refactor: Always include first and last point
+    if (i === 0) idx = 0;
+    if (i === pointCount - 1) idx = line.length - 1;
     simplified.push(line[idx]);
   }
   return simplified;
 }
 
 // === LOD line filtering helper ===
-// refactor: reduce number of lines rendered at high altitude (no merge, no data loss)
+// refactor: Reduce number of lines rendered at high altitude (no merge, no data loss)
 function filterLinesLOD(lines, lodFactor) {
   // refactor: Only render a subset of lines according to LOD
   const count = Math.max(1, Math.floor(lines.length * lodFactor));
@@ -172,6 +183,10 @@ cesiumViewer.scene.postRender.addEventListener(() => {
 
   if (!tilesetInstance || !tilesetInstance._selectedTiles) return;
 
+  // refactor: get current camera height for dynamic width
+  const cameraHeight = cesiumViewer.camera.positionCartographic.height;
+  const dynamicLineWidth = getDynamicLineWidth(cameraHeight); // refactor: dynamic width
+
   tilesetInstance._selectedTiles.forEach(tile => {
     const tileInfo = tileDataMap.get(tile);
     if (!tileInfo) return;
@@ -186,7 +201,8 @@ cesiumViewer.scene.postRender.addEventListener(() => {
     // Count vertices
     vertexCount += simplifiedLines.reduce((sum, line) => sum + line.length, 0);
 
-    tileInfo.yellowPrimitive = createPolylinePrimitive(simplifiedLines, Cesium.Color.YELLOW, 5);
+    // refactor: use dynamicLineWidth for better visibility at high altitude
+    tileInfo.yellowPrimitive = createPolylinePrimitive(simplifiedLines, Cesium.Color.YELLOW, dynamicLineWidth);
     if (tileInfo.yellowPrimitive) cesiumViewer.scene.primitives.add(tileInfo.yellowPrimitive);
   });
 });
