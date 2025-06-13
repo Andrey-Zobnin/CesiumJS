@@ -1,4 +1,3 @@
-
 // === Simple Cesium Viewer ===
 const cesiumViewer = new Cesium.Viewer('cesiumContainer');
 cesiumViewer.scene.globe.show = true;
@@ -32,6 +31,20 @@ function updateAutoLod() {
   lodFactorVal = Math.max(0.05, Math.min(1.0, factorVal));
   lodInputEl.value = lodFactorVal.toFixed(2);
   lodDisplayEl.textContent = lodFactorVal.toFixed(2);
+}
+
+// === Polyline LOD simplification helper ===
+// refactor: extracted simplification into its own function for clarity and reuse
+function simplifyLineLOD(line, lodFactor) {
+  const pointCount = Math.max(2, Math.ceil(line.length * lodFactor));
+  if (line.length <= 2 || pointCount >= line.length) return line;
+  const step = (line.length - 1) / (pointCount - 1);
+  const simplified = [];
+  for (let i = 0; i < pointCount; i++) {
+    const idx = Math.round(i * step);
+    simplified.push(line[idx]);
+  }
+  return simplified;
 }
 
 // === Extract LINE geometry from GLB ===
@@ -150,18 +163,8 @@ cesiumViewer.scene.postRender.addEventListener(() => {
 
     if (tileInfo.yellowPrimitive) cesiumViewer.scene.primitives.remove(tileInfo.yellowPrimitive);
 
-    // Simplify lines proportionally to lodFactorVal
-    const simplifiedLines = tileInfo.lines.map(line => {
-      const pointCount = Math.max(2, Math.ceil(line.length * lodFactorVal));
-      if (line.length <= 2 || pointCount >= line.length) return line;
-      const step = (line.length - 1) / (pointCount - 1);
-      const simplified = [];
-      for (let i = 0; i < pointCount; i++) {
-        const idx = Math.round(i * step);
-        simplified.push(line[idx]);
-      }
-      return simplified;
-    });
+    // refactor: use the extracted simplifyLineLOD function for LOD simplification
+    const simplifiedLines = tileInfo.lines.map(line => simplifyLineLOD(line, lodFactorVal));
 
     // Count vertices
     vertexCount += simplifiedLines.reduce((sum, line) => sum + line.length, 0);
