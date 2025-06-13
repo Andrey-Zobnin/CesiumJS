@@ -36,6 +36,7 @@ function updateAutoLod() {
 // === Polyline LOD simplification helper ===
 // refactor: extracted simplification into its own function for clarity and reuse
 function simplifyLineLOD(line, lodFactor) {
+  // refactor: Subsamples points per line according to LOD
   const pointCount = Math.max(2, Math.ceil(line.length * lodFactor));
   if (line.length <= 2 || pointCount >= line.length) return line;
   const step = (line.length - 1) / (pointCount - 1);
@@ -45,6 +46,19 @@ function simplifyLineLOD(line, lodFactor) {
     simplified.push(line[idx]);
   }
   return simplified;
+}
+
+// === LOD line filtering helper ===
+// refactor: reduce number of lines rendered at high altitude (no merge, no data loss)
+function filterLinesLOD(lines, lodFactor) {
+  // refactor: Only render a subset of lines according to LOD
+  const count = Math.max(1, Math.floor(lines.length * lodFactor));
+  const step = Math.max(1, Math.floor(lines.length / count));
+  const filtered = [];
+  for (let i = 0; i < lines.length && filtered.length < count; i += step) {
+    filtered.push(lines[i]);
+  }
+  return filtered;
 }
 
 // === Extract LINE geometry from GLB ===
@@ -90,6 +104,7 @@ function extractLinesFromModel(model) {
 
 // === Create polyline primitive for multiple lines ===
 function createPolylinePrimitive(linesArr, colorVal, lineWidth) {
+  // refactor: creates polylines from provided simplified/filtered lines
   const geometryInstances = linesArr.map(line => {
     const positions = Cesium.Cartesian3.fromArray(line.flat());
     return new Cesium.GeometryInstance({
@@ -161,10 +176,12 @@ cesiumViewer.scene.postRender.addEventListener(() => {
     const tileInfo = tileDataMap.get(tile);
     if (!tileInfo) return;
 
+    // Remove previous primitive to avoid memory buildup
     if (tileInfo.yellowPrimitive) cesiumViewer.scene.primitives.remove(tileInfo.yellowPrimitive);
 
-    // refactor: use the extracted simplifyLineLOD function for LOD simplification
-    const simplifiedLines = tileInfo.lines.map(line => simplifyLineLOD(line, lodFactorVal));
+    // refactor: Filter lines and then simplify each line for current LOD
+    const filteredLines = filterLinesLOD(tileInfo.lines, lodFactorVal); // refactor: only a subset of lines for LOD
+    const simplifiedLines = filteredLines.map(line => simplifyLineLOD(line, lodFactorVal)); // refactor: each line is simplified for LOD
 
     // Count vertices
     vertexCount += simplifiedLines.reduce((sum, line) => sum + line.length, 0);
