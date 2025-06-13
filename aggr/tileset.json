@@ -1,0 +1,52 @@
+{
+    "asset": {
+        "version": "1.0"
+    },
+    "geometricError": 1572864.0,
+    "root": {
+        "boundingVolume": {
+            "region": [
+                -3.141592653589793,
+                -1.5707963267948966,
+                3.141592653589793,
+                1.5707963267948966,
+                0,
+                300
+            ]
+        },
+        "geometricError": 1572864.0,
+        "refine": "ADD",
+        "children": [
+            {
+                "boundingVolume": {
+                    "region": [
+                        0,
+                        -1.5707963267948966,
+                        3.141592653589793,
+                        1.5707963267948966,
+                        0,
+                        300
+                    ]
+                },
+                "geometricError": 786432.0,
+                "refine": "ADD",
+                "content": {
+                    "uri": "e.json"
+                }
+            }
+        ]
+    },
+    "schema": {
+        "classes": {
+            "tile": {
+                "properties": {
+                    "geometricError": {
+                        "semantic": "TILE_GEOMETRIC_ERROR",
+                        "type": "SCALAR",
+                        "componentType": "FLOAT32"
+                    }
+                }
+            }
+        }
+    }
+}
