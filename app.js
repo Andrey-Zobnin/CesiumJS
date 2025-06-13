@@ -73,6 +73,7 @@ function filterLinesLOD(lines, lodFactor) {
 }
 
 // === Extract LINE geometry from GLB ===
+// refactor: extract each line segment or strip as a separate array for correct LOD
 function extractLinesFromModel(model) {
   const linesArray = [];
   if (!model?.scene) return linesArray;
@@ -80,13 +81,11 @@ function extractLinesFromModel(model) {
   model.scene.traverse(node => {
     if (!node.mesh) return;
     node.mesh.primitives.forEach(primitive => {
-      if (primitive.primitiveType !== Cesium.ModelPrimitiveType.LINES) return;
-
       const positionAttr = primitive.attributes.find(attr => attr.name === 'POSITION');
       const indicesAttr = primitive.indices;
-
       if (!positionAttr) return;
 
+      // Extract positions array
       const positions = [];
       for (let i = 0; i < positionAttr.count; i++) {
         const idx = i * 3;
@@ -97,15 +96,31 @@ function extractLinesFromModel(model) {
         ]);
       }
 
-      if (indicesAttr) {
-        const line = [];
-        for (let i = 0; i < indicesAttr.count; i++) {
-          const vertexIndex = indicesAttr.values[i];
-          line.push(positions[vertexIndex]);
+      // --- Polyline extraction logic (the main refactor) ---
+      if (primitive.primitiveType === Cesium.ModelPrimitiveType.LINES) {
+        // Each pair of indices is a segment: [A,B], [C,D], ...
+        if (indicesAttr) {
+          for (let i = 0; i < indicesAttr.count; i += 2) {
+            linesArray.push([positions[indicesAttr.values[i]], positions[indicesAttr.values[i + 1]]]);
+          }
+        } else {
+          // If no indices, treat as consecutive pairs
+          for (let i = 0; i < positions.length - 1; i += 2) {
+            linesArray.push([positions[i], positions[i + 1]]);
+          }
         }
-        linesArray.push(line);
-      } else {
-        linesArray.push(positions);
+      } else if (primitive.primitiveType === Cesium.ModelPrimitiveType.LINE_STRIP) {
+        // GLTF/GLB "LINE_STRIP": treat the whole as a single polyline
+        // But ideally, split at known break points if needed (e.g., based on application logic)
+        if (indicesAttr) {
+          const polyline = [];
+          for (let i = 0; i < indicesAttr.count; i++) {
+            polyline.push(positions[indicesAttr.values[i]]);
+          }
+          linesArray.push(polyline);
+        } else {
+          linesArray.push(positions);
+        }
       }
     });
   });
@@ -172,7 +187,7 @@ cesiumViewer.scene.postRender.addEventListener(() => {
   fpsCounter++;
   if (now - lastFpsUpdate >= 1000) {
     fpsCounterVal.textContent = Math.round(fpsCounter * 1000 / (now - lastFpsUpdate));
-    vertexCounterVal.textContent = vertexCount;
+    vertexCounterVal.textContent = vertexCount; // refactor: show only actually rendered vertices
     fpsCounter = 0;
     lastFpsUpdate = now;
     vertexCount = 0;
@@ -196,10 +211,11 @@ cesiumViewer.scene.postRender.addEventListener(() => {
 
     // refactor: Filter lines and then simplify each line for current LOD
     const filteredLines = filterLinesLOD(tileInfo.lines, lodFactorVal); // refactor: only a subset of lines for LOD
-    const simplifiedLines = filteredLines.map(line => simplifyLineLOD(line, lodFactorVal)); // refactor: each line is simplified for LOD
-
-    // Count vertices
-    vertexCount += simplifiedLines.reduce((sum, line) => sum + line.length, 0);
+    const simplifiedLines = filteredLines.map(line => {
+      const simplified = simplifyLineLOD(line, lodFactorVal); // refactor: each line is simplified for LOD
+      vertexCount += simplified.length; // refactor: count actual displayed vertices
+      return simplified;
+    });
 
     // refactor: use dynamicLineWidth for better visibility at high altitude
     tileInfo.yellowPrimitive = createPolylinePrimitive(simplifiedLines, Cesium.Color.YELLOW, dynamicLineWidth);
