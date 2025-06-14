@@ -84,6 +84,53 @@
     #smoothWindow {
       width: 100%;
     }
+
+    /* Terminal style */
+    #terminalLog {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 480px;
+      max-width: 90vw;
+      height: 180px;
+      background: rgba(20,20,30,0.80);
+      color: #0f0;
+      font-family: "Fira Mono", "Consolas", monospace;
+      font-size: 13px;
+      border-radius: 8px 8px 0 0;
+      box-shadow: 0 0 20px #0009;
+      z-index: 1200;
+      padding: 10px 8px 7px 12px;
+      overflow-y: auto;
+      user-select: text;
+      transition: background 0.2s;
+    }
+    #terminalLog::-webkit-scrollbar { width: 8px; background: transparent;}
+    #terminalLog::-webkit-scrollbar-thumb { background: #2228; border-radius: 5px; }
+    #terminalTitle {
+      font-size: 13px;
+      color: #fff6;
+      margin-bottom: 4px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      user-select: none;
+    }
+    #terminalInputBar {
+      width: 98%;
+      font-family: inherit;
+      font-size: 13px;
+      background: transparent;
+      border: none;
+      color: #cff;
+      outline: none;
+    }
+    .log-info { color: #0ff; }
+    .log-warn { color: #ff0; }
+    .log-error { color: #f44; }
+    .log-action { color: #fff; }
+    .log-ok { color: #7f7; }
+    .log-system { color: #9ff; }
+    .log-debug { color: #aaa; }
   </style>
 </head>
 <body>
@@ -139,10 +186,40 @@
     </div>
   </div>
 
+  <!-- Terminal log window -->
+  <div id="terminalLog">
+    <div id="terminalTitle">[ ЛОГ ДЕЙСТВИЙ ]</div>
+    <div id="terminalOutput"></div>
+  </div>
+
   <script>
+    // === TERMINAL LOGIC ===
+    const termLog = document.getElementById('terminalLog');
+    const termOut = document.getElementById('terminalOutput');
+
+    function logAction(msg, type="info") {
+      // Types: info, warn, error, action, ok, system, debug
+      const span = document.createElement('span');
+      span.className = "log-" + type;
+      span.textContent = `[${(new Date()).toLocaleTimeString()}] ` + msg;
+      termOut.appendChild(span);
+      termOut.appendChild(document.createElement('br'));
+      // Scroll to bottom
+      termLog.scrollTop = termLog.scrollHeight;
+      // Limit log size
+      if (termOut.children.length > 200) {
+        for (let i = 0; i < 20; i++) termOut.removeChild(termOut.firstChild);
+      }
+    }
+
+    // Make logAction global for debug
+    window.logAction = logAction;
+
     // === Simple Cesium Viewer ===
     const cesiumViewer = new Cesium.Viewer('cesiumContainer');
     cesiumViewer.scene.globe.show = true;
+
+    logAction('Cesium viewer initialized', "system");
 
     // === DOM Elements ===
     const fpsCounterVal = document.getElementById('fpsVal');
@@ -170,6 +247,7 @@
       if (!isNaN(inputVal)) {
         lodFactor = Math.max(0, Math.min(1, inputVal));
         lodDisplayEl.textContent = lodFactor.toFixed(2);
+        logAction(`LOD вручную установлен на ${lodFactor.toFixed(2)}`, "info");
       }
     });
 
@@ -188,6 +266,7 @@
       lodFactor = calculateLodFactor(cameraHeight);
       lodInputEl.value = lodFactor.toFixed(2);
       lodDisplayEl.textContent = lodFactor.toFixed(2);
+      logAction(`Auto LOD обновлён: cameraHeight=${cameraHeight.toFixed(0)}, LOD=${lodFactor.toFixed(2)}`, "debug");
     }
 
     // === Dynamic polyline width for high altitudes ===
@@ -197,7 +276,7 @@
       return 5 + (cameraHeight - 2000) * (18 - 5) / (4000000 - 2000);
     }
 
-    // === Polyline LOD simplification (more vertices when close, only 2 at high altitude) ===
+    // === Polyline LOD simplification ===
     function simplifyPolylineByLod(polyline, lod) {
       const minPoints = 2;
       const maxPoints = polyline.length;
@@ -334,35 +413,33 @@
     function processPolyline(points, lod, cameraHeight) {
       let processed = points;
 
-      // Сглаживание
       if (smoothingToggle && smoothingToggle.checked) {
         processed = smoothPolyline(
           processed,
           parseInt(smoothWindowInput.value)
         );
+        logAction('Polyline smoothing applied', "action");
       }
-
-      // Merge by Distance (Blender style)
       if (mergeToggle && mergeToggle.checked) {
         processed = mergeByDistance(processed, parseFloat(mergeDistInput.value));
+        logAction('Merge by Distance applied (d=' + mergeDistInput.value + 'm)', "action");
       }
-
-      // Упрощение по RDP
       if (simplifyToggle && simplifyToggle.checked) {
-        const baseEpsilon = 10; // meters
+        const baseEpsilon = 10;
         const epsilon = baseEpsilon * (cameraHeight / 10000);
         processed = simplifyCurve(processed, epsilon);
+        logAction('RDP Simplification applied (epsilon=' + epsilon.toFixed(2) + ')', "action");
       } else {
-        // LOD упрощение если RDP выключен
         processed = simplifyPolylineByLod(processed, lod);
+        logAction('LOD Simplification applied', "action");
       }
-
       return processed;
     }
 
     // === Update Smooth Window Display ===
     smoothWindowInput.addEventListener('input', () => {
       smoothWindowVal.textContent = smoothWindowInput.value;
+      logAction('Smooth window set to ' + smoothWindowInput.value, "info");
     });
 
     // === Extract each polyline feature from model (no merging, each polyline is a separate feature) ===
@@ -448,19 +525,21 @@
         tilesetInstance = tileset;
         cesiumViewer.scene.primitives.add(tileset);
         cesiumViewer.zoomTo(tileset);
-        console.log('Tileset loaded');
+        logAction('Tileset loaded', "ok");
 
         tileset.tileLoad.addEventListener(tile => {
           const model = tile.content._model;
           const features = model ? extractPolylinesFromModel(model) : [];
-          console.log("Tile loaded, features found:", features.length);
+          logAction(`Tile loaded, features found: ${features.length}`, "system");
           tileDataMap.set(tile, {
             features,
             yellowPrimitive: null
           });
         });
       })
-      .catch(err => console.error('Failed to load tileset:', err));
+      .catch(err => {
+        logAction('Failed to load tileset: ' + err, "error");
+      });
 
     // === FPS, Vertex, Feature, and LOD Counters ===
     let lastFpsUpdate = performance.now();
@@ -515,6 +594,41 @@
       featureCounterVal.textContent = featureCount;
       lodCounterVal.textContent = (autoLodCheckbox.checked ? lod : lodFactor).toFixed(2);
     });
+
+    // === Log UI actions ===
+    [
+      ['simplifyToggle', 'info', 'RDP simplification toggled'],
+      ['smoothingToggle', 'info', 'Smoothing toggled'],
+      ['mergeToggle', 'info', 'Merge by Distance toggled'],
+      ['mergeDistInput', 'info', 'Merge distance changed'],
+    ].forEach(([id, type, msg]) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', () => logAction(msg, type));
+        el.addEventListener('change', () => logAction(msg, type));
+      }
+    });
+
+    // Terminal input for debug (optional)
+    // Uncomment if you want to allow custom JS commands in the terminal
+    /*
+    const termInput = document.createElement('input');
+    termInput.type = 'text';
+    termInput.id = 'terminalInputBar';
+    termLog.appendChild(termInput);
+    termInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        logAction('> ' + termInput.value, 'system');
+        try {
+          const result = eval(termInput.value);
+          logAction(String(result), 'ok');
+        } catch (err) {
+          logAction(String(err), 'error');
+        }
+        termInput.value = '';
+      }
+    });
+    */
   </script>
 </body>
 </html>
