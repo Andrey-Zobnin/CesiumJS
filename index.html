@@ -251,26 +251,25 @@
     }
 
     function simplifyPolylineByLod(polyline, lod) {
-      // Simplify polyline by dropping vertices based on LOD
-      const minPoints = 2;
-      const maxPoints = polyline.length;
-      if (maxPoints <= minPoints) return polyline;
-      const lodThreshold = 0.15;
-      if (lod <= lodThreshold) {
-        return [polyline[0], polyline[maxPoints - 1]];
+      const len = polyline.length;
+      if (len <= 2) return polyline;
+
+      if (lod <= 0.15) return [polyline[0], polyline[len - 1]];
+
+      const targetCount = Math.max(2, Math.ceil(len * lod));
+      if (targetCount >= len) return polyline;
+
+      const step = (len - 1) / (targetCount - 1);
+      const simplified = new Array(targetCount);
+
+      for (let i = 0; i < targetCount; i++) {
+        const index = i === targetCount - 1 ? len - 1 : Math.floor(i * step);
+        simplified[i] = polyline[index];
       }
-      const pointCount = Math.max(minPoints, Math.ceil(maxPoints * lod));
-      if (pointCount >= maxPoints) return polyline;
-      const step = (maxPoints - 1) / (pointCount - 1);
-      const simplified = [];
-      for (let i = 0; i < pointCount; i++) {
-        let index = Math.round(i * step);
-        if (i === 0) index = 0;
-        if (i === pointCount - 1) index = maxPoints - 1;
-        simplified.push(polyline[index]);
-      }
+
       return simplified;
     }
+
 
     function smoothPolyline(points, windowSize = 5) {
       // Apply moving average smoothing to polyline
