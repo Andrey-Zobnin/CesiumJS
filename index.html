@@ -414,10 +414,12 @@
       }
       if (mergeToggle && mergeToggle.checked) {
         processed = mergeByDistance(processed, parseFloat(mergeDistInput.value));
+        // Log the merge distance to the terminal
         logAction('Merge by Distance applied (d=' + mergeDistInput.value + 'm)', "action");
       }
       // Log the output vertex count always
       logAction(`Polyline vertices after processing: ${processed.length}`, "debug");
+      // Return processed polyline
       return processed;
     }
     // -- END PATCHED FUNCTION ---
@@ -446,6 +448,7 @@
               geometry.coordinates.forEach(line => features.push(line));
             }
           }
+          // go next 
           continue;
         }
 
@@ -535,11 +538,8 @@
         logAction('Failed to load tileset: ' + err, "error");
       });
 
-    let lastFpsUpdate = performance.now();
-    let fpsCounter = 0;
-    let vertexCount = 0;
-    let featureCount = 0;
-    let polylineCount = 0;
+    // === Initialize counters and LOD one line ===
+    let lastFpsUpdate = performance.now(), fpsCounter = 0, vertexCount = 0, featureCount = 0, polylineCount = 0;
 
     // === Render loop: update counters, LOD, and polylines ===
     cesiumViewer.scene.postRender.addEventListener(() => {
