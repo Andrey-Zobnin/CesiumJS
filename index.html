@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cesium 3D Tiles Vector LOD Viewer v6</title>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Cesium.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+  <style>
+    html, body, #cesiumContainer {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: monospace;
+    }
+    .counter {
+      position: absolute;
+      left: 10px;
+      color: #fff;
+      text-shadow: 0 0 4px #000;
+      z-index: 1000;
+      user-select: none;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    #fpsCounter { top: 10px; }
+    #vertexCounter { top: 30px; }
+    #featureCounter { top: 50px; }
+    #polylineCounter { top: 70px; }
+    #lodCounter { top: 90px; }
+    #lodControl, #simplificationControl {
+      position: absolute;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 8px 12px;
+      border-radius: 4px;
+      user-select: text;
+      min-width: 180px;
+    }
+    #lodControl {
+      top: 110px;
+    }
+    #simplificationControl {
+      top: 230px;
+    }
+    #lodControl label,
+    #simplificationControl label {
+      font-size: 13px;
+      user-select: none;
+      cursor: pointer;
+      vertical-align: middle;
+    }
+    #lodInput {
+      width: 60px;
+      font-size: 13px;
+      margin-top: 4px;
+      color: #aaa;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid #555;
+      border-radius: 3px;
+      display: block;
+      user-select: text;
+    }
+    #lodDisplay {
+      margin-top: 6px;
+      color: #fff;
+      font-weight: bold;
+      font-size: 16px;
+      user-select: text;
+    }
+    input[type="checkbox"] {
+      vertical-align: middle;
+    }
+    #smoothWindow {
+      width: 100%;
+    }
+    #terminalLog {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 480px;
+      max-width: 90vw;
+      height: 180px;
+      background: rgba(20,20,30,0.80);
+      color: #0f0;
+      font-family: "Fira Mono", "Consolas", monospace;
+      font-size: 13px;
+      border-radius: 8px 8px 0 0;
+      box-shadow: 0 0 20px #0009;
+      z-index: 1200;
+      padding: 10px 8px 7px 12px;
+      overflow-y: auto;
+      user-select: text;
+      transition: background 0.2s;
+    }
+    #terminalLog::-webkit-scrollbar { width: 8px; background: transparent;}
+    #terminalLog::-webkit-scrollbar-thumb { background: #2228; border-radius: 5px; }
+    #terminalTitle {
+      font-size: 13px;
+      color: #fff6;
+      margin-bottom: 4px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      user-select: none;
+    }
+    .log-info { color: #0ff; }
+    .log-warn { color: #ff0; }
+    .log-error { color: #f44; }
+    .log-action { color: #fff; }
+    .log-ok { color: #7f7; }
+    .log-system { color: #9ff; }
+    .log-debug { color: #aaa; }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <div id="fpsCounter" class="counter">
+    FPS: <span id="fpsVal">-</span>
+  </div>
+  <div id="vertexCounter" class="counter">
+    Vertices: <span id="vertexVal">-</span>
+  </div>
+  <div id="featureCounter" class="counter">
+    Features: <span id="featureVal">-</span>
+  </div>
+  <div id="polylineCounter" class="counter">
+    Polylines: <span id="polylineVal">-</span>
+  </div>
+  <div id="lodCounter" class="counter">
+    LOD: <span id="lodVal">-</span>
+  </div>
+
+  <div id="lodControl" class="counter">
+    <div>LOD (0–1):</div>
+    <input type="number" id="lodInput" min="0" max="1" step="0.05" value="1.0" />
+    <label>
+      <input type="checkbox" id="autoLodToggle" checked />
+      auto
+    </label>
+    <div id="lodDisplay">1.00</div>
+  </div>
+
+  <div id="simplificationControl" class="counter">
+    <div><strong>Simplification</strong></div>
+    <div>
+      <input type="checkbox" id="simplifyToggle" checked>
+      <label for="simplifyToggle">Enable Simplification</label>
+    </div>
+    <div>
+      <input type="checkbox" id="smoothingToggle">
+      <label for="smoothingToggle">Enable Smoothing</label>
+    </div>
+    <div>
+      <label for="smoothWindow">Smooth Window:</label>
+      <input type="range" id="smoothWindow" min="3" max="15" step="2" value="5">
+      <span id="smoothWindowVal">5</span>
+    </div>
+    <div style="margin-top:8px;">
+      <input type="checkbox" id="mergeToggle">
+      <label for="mergeToggle">Merge by Distance (Blender)</label>
+      <br>
+      <label for="mergeDistInput">Distance (m):</label>
+      <input type="number" id="mergeDistInput" min="0.01" step="0.01" value="1" style="width:55px;">
+    </div>
+  </div>
+
+  <!-- Terminal log window -->
+  <div id="terminalLog">
+    <div id="terminalTitle">[ ACTION LOG ]</div>
+    <div id="terminalOutput"></div>
+  </div>
+
+  <script>
+    // === Terminal logger ===
+    const terminalLog = document.getElementById('terminalLog');
+    const terminalOutput = document.getElementById('terminalOutput');
+    function logAction(message, type="info") {
+      const span = document.createElement('span');
+      span.className = "log-" + type;
+      span.textContent = `[${(new Date()).toLocaleTimeString()}] ` + message;
+      terminalOutput.appendChild(span);
+      terminalOutput.appendChild(document.createElement('br'));
+      terminalLog.scrollTop = terminalLog.scrollHeight;
+      if (terminalOutput.children.length > 200) {
+        for (let i = 0; i < 20; i++) terminalOutput.removeChild(terminalOutput.firstChild);
+      }
+    }
+    window.logAction = logAction;
+
+    // === Cesium viewer setup ===
+    const cesiumViewer = new Cesium.Viewer('cesiumContainer');
+    cesiumViewer.scene.globe.show = true;
+    logAction('Cesium viewer initialized', "system");
+
+    // === DOM element references ===
+    const fpsCounterValue = document.getElementById('fpsVal');
+    const vertexCounterValue = document.getElementById('vertexVal');
+    const lodInputElement = document.getElementById('lodInput');
+    const lodDisplayElement = document.getElementById('lodDisplay');
+    const autoLodToggle = document.getElementById('autoLodToggle');
+    const featureCounterValue = document.getElementById('featureVal');
+    const lodCounterValue = document.getElementById('lodVal');
+    const simplifyToggle = document.getElementById('simplifyToggle');
+    const smoothingToggle = document.getElementById('smoothingToggle');
+    const smoothWindowInput = document.getElementById('smoothWindow');
+    const smoothWindowValue = document.getElementById('smoothWindowVal');
+    const mergeToggle = document.getElementById('mergeToggle');
+    const mergeDistInput = document.getElementById('mergeDistInput');
+    const polylineCounterValue = document.getElementById('polylineVal');
+
+    // === Global LOD factor (0–1) ===
+    let lodFactor = 1.0;
+
+    lodInputElement.addEventListener('input', () => {
+      const inputValue = parseFloat(lodInputElement.value);
+      if (!isNaN(inputValue)) {
+        lodFactor = Math.max(0, Math.min(1, inputValue));
+        lodDisplayElement.textContent = lodFactor.toFixed(2);
+        logAction(`LOD set manually to ${lodFactor.toFixed(2)}`, "info");
+      }
+    });
+
+    function calculateLodFactor(cameraHeight) {
+      // Calculate LOD factor depending on camera height above the globe
+      const minHeight = 2000;
+      const maxHeight = 4000000;
+      if (cameraHeight < minHeight) return 1.0;
+      if (cameraHeight > maxHeight) return 0.05;
+      return 1.0 - ((cameraHeight - minHeight) / (maxHeight - minHeight)) * (1.0 - 0.05);
+    }
+
+    function updateAutoLod() {
+      const cameraHeight = cesiumViewer.camera.positionCartographic.height;
+      lodFactor = calculateLodFactor(cameraHeight);
+      lodInputElement.value = lodFactor.toFixed(2);
+      lodDisplayElement.textContent = lodFactor.toFixed(2);
+      logAction(`Auto LOD updated: cameraHeight=${cameraHeight.toFixed(0)}, LOD=${lodFactor.toFixed(2)}`, "debug");
+    }
+
+    function getDynamicLineWidth(cameraHeight) {
+      // Calculate polyline width depending on globe camera height
+      const minWidth = 10;
+      const maxWidth = 28;
+      const minHeight = 2000;
+      const maxHeight = 10000000;
+      let width = minWidth + (maxWidth - minWidth) * ((cameraHeight - minHeight) / (maxHeight - minHeight));
+      width = Math.max(minWidth, Math.min(maxWidth, width));
+      return width;
+    }
+
+    function simplifyPolylineByLod(polyline, lod) {
+      // Simplify polyline by dropping vertices based on LOD
+      const minPoints = 2;
+      const maxPoints = polyline.length;
+      if (maxPoints <= minPoints) return polyline;
+      const lodThreshold = 0.15;
+      if (lod <= lodThreshold) {
+        return [polyline[0], polyline[maxPoints - 1]];
+      }
+      const pointCount = Math.max(minPoints, Math.ceil(maxPoints * lod));
+      if (pointCount >= maxPoints) return polyline;
+      const step = (maxPoints - 1) / (pointCount - 1);
+      const simplified = [];
+      for (let i = 0; i < pointCount; i++) {
+        let index = Math.round(i * step);
+        if (i === 0) index = 0;
+        if (i === pointCount - 1) index = maxPoints - 1;
+        simplified.push(polyline[index]);
+      }
+      return simplified;
+    }
+
+    function smoothPolyline(points, windowSize = 5) {
+      // Apply moving average smoothing to polyline
+      if (windowSize < 3 || points.length < windowSize) return points;
+      const halfWindow = Math.floor(windowSize / 2);
+      const smoothed = [];
+      for (let i = 0; i < points.length; i++) {
+        let sumX = 0, sumY = 0, sumZ = 0, count = 0;
+        for (let j = i - halfWindow; j <= i + halfWindow; j++) {
+          if (j >= 0 && j < points.length) {
+            sumX += points[j][0];
+            sumY += points[j][1];
+            sumZ += points[j][2];
+            count++;
+          }
+        }
+        smoothed.push([
+          sumX / count,
+          sumY / count,
+          sumZ / count
+        ]);
+      }
+      return smoothed;
+    }
+
+    function mergeByDistance(points, mergeDistMeters) {
+      // Remove points that are closer than the merge distance
+      if (points.length === 0) return [];
+      const result = [points[0]];
+      for (let i = 1; i < points.length; i++) {
+        const prev = result[result.length - 1];
+        const curr = points[i];
+        const dist = Cesium.Cartesian3.distance(
+          Cesium.Cartesian3.fromArray(prev),
+          Cesium.Cartesian3.fromArray(curr)
+        );
+        if (dist >= mergeDistMeters) {
+          result.push(curr);
+        }
+      }
+      return result;
+    }
+
+    function simplifyRdp(points, epsilon, start, end) {
+      // Douglas-Peucker polyline simplification
+      if (start >= end - 1) return [points[start]];
+      const lineStart = points[start];
+      const lineEnd = points[end];
+      let maxDist = 0;
+      let maxIndex = start;
+      for (let i = start + 1; i < end; i++) {
+        const dist = pointToLineDistance(points[i], lineStart, lineEnd);
+        if (dist > maxDist) {
+          maxDist = dist;
+          maxIndex = i;
+        }
+      }
+      if (maxDist > epsilon) {
+        const left = simplifyRdp(points, epsilon, start, maxIndex);
+        const right = simplifyRdp(points, epsilon, maxIndex, end);
+        return left.slice(0, -1).concat(right);
+      } else {
+        return [points[start], points[end]];
+      }
+    }
+    function pointToLineDistance(point, lineStart, lineEnd) {
+      // Calculate perpendicular distance from point to line
+      if (Cesium.Cartesian3.distance(
+        Cesium.Cartesian3.fromArray(lineStart),
+        Cesium.Cartesian3.fromArray(lineEnd)
+      ) < Cesium.EPSILON6) {
+        return Cesium.Cartesian3.distance(
+          Cesium.Cartesian3.fromArray(point),
+          Cesium.Cartesian3.fromArray(lineStart)
+        );
+      }
+      const v = new Cesium.Cartesian3();
+      const w = new Cesium.Cartesian3();
+      Cesium.Cartesian3.subtract(
+        Cesium.Cartesian3.fromArray(lineEnd),
+        Cesium.Cartesian3.fromArray(lineStart),
+        v
+      );
+      Cesium.Cartesian3.subtract(
+        Cesium.Cartesian3.fromArray(point),
+        Cesium.Cartesian3.fromArray(lineStart),
+        w
+      );
+      const c1 = Cesium.Cartesian3.dot(w, v);
+      const c2 = Cesium.Cartesian3.dot(v, v);
+      const b = c1 / c2;
+      const pb = new Cesium.Cartesian3();
+      Cesium.Cartesian3.multiplyByScalar(v, b, pb);
+      Cesium.Cartesian3.add(
+        Cesium.Cartesian3.fromArray(lineStart),
+        pb,
+        pb
+      );
+      return Cesium.Cartesian3.distance(
+        Cesium.Cartesian3.fromArray(point),
+        pb
+      );
+    }
+    function simplifyCurve(points, epsilon) {
+      // Simplify a curve using Douglas-Peucker
+      if (points.length < 3) return points;
+      return simplifyRdp(points, epsilon, 0, points.length - 1);
+    }
+
+    // --- PATCHED FUNCTION: limit to max 14 vertices at high camera, add log ---
+    function processPolyline(points, lod, cameraHeight) {
+      let processed = points;
+      if (cameraHeight > 3_000_000) {
+        // Only show up to 14 vertices, evenly sampled
+        const maxVertices = 14;
+        if (processed.length > maxVertices) {
+          const step = (processed.length - 1) / (maxVertices - 1);
+          const reduced = [];
+          for (let i = 0; i < maxVertices; i++) {
+            let idx = Math.round(i * step);
+            if (i === 0) idx = 0;
+            if (i === maxVertices - 1) idx = processed.length - 1;
+            reduced.push(processed[idx]);
+          }
+          processed = reduced;
+          logAction(`High camera: reduced to ${processed.length} vertices (max 14)`, "action");
+        } else {
+          logAction(`High camera: polyline has only ${processed.length} vertices (<=14)`, "action");
+        }
+      } else if (simplifyToggle && simplifyToggle.checked) {
+        const baseEpsilon = 10;
+        const epsilon = baseEpsilon * (cameraHeight / 10000);
+        processed = simplifyCurve(processed, epsilon);
+        logAction('RDP Simplification applied (epsilon=' + epsilon.toFixed(2) + ')', "action");
+      } else {
+        processed = simplifyPolylineByLod(processed, lod);
+        logAction('LOD Simplification applied', "action");
+      }
+      if (smoothingToggle && smoothingToggle.checked) {
+        processed = smoothPolyline(processed, parseInt(smoothWindowInput.value));
+        logAction('Polyline smoothing applied', "action");
+      }
+      if (mergeToggle && mergeToggle.checked) {
+        processed = mergeByDistance(processed, parseFloat(mergeDistInput.value));
+        logAction('Merge by Distance applied (d=' + mergeDistInput.value + 'm)', "action");
+      }
+      // Log the output vertex count always
+      logAction(`Polyline vertices after processing: ${processed.length}`, "debug");
+      return processed;
+    }
+    // -- END PATCHED FUNCTION ---
+
+    smoothWindowInput.addEventListener('input', () => {
+      smoothWindowValue.textContent = smoothWindowInput.value;
+      logAction('Smooth window set to ' + smoothWindowInput.value, "info");
+    });
+
+    // === Extract polylines from vector tile, each LineString and MultiLineString is separate ===
+    function extractPolylinesFromVectorTile(tile) {
+      const content = tile.content;
+      const features = [];
+      if (!content || typeof content.featuresLength !== "number") return features;
+      for (let i = 0; i < content.featuresLength; i++) {
+        const feature = content.getFeature(i);
+
+        // New universal extraction: GeoJSON-like with getGeometry
+        if (feature && typeof feature.getGeometry === "function") {
+          const geometry = feature.getGeometry();
+          if (geometry) {
+            if (geometry.type === "LineString" && Array.isArray(geometry.coordinates)) {
+              features.push(geometry.coordinates);
+            }
+            if (geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)) {
+              geometry.coordinates.forEach(line => features.push(line));
+            }
+          }
+          continue;
+        }
+
+        // Look for coordinate arrays
+        if (feature && typeof feature.getPropertyNames === "function") {
+          const names = feature.getPropertyNames();
+          for (const name of names) {
+            const prop = feature.getProperty(name);
+
+            // LineString: array of points
+            if (Array.isArray(prop) && prop.length > 1 && Array.isArray(prop[0])) {
+              features.push(prop);
+            }
+            // MultiLineString: array of arrays of points
+            else if (Array.isArray(prop) && Array.isArray(prop[0]) && Array.isArray(prop[0][0])) {
+              prop.forEach(line => features.push(line));
+            }
+            // Flat coordinates
+            else if (Array.isArray(prop) && prop.length > 3 && typeof prop[0] === "number") {
+              let coords = [];
+              for (let j = 0; j < prop.length; j += 3) {
+                coords.push([prop[j], prop[j+1], prop[j+2]]);
+              }
+              if (coords.length > 1) features.push(coords);
+            }
+          }
+        }
+        // Direct polylinePositions
+        else if (feature.polylinePositions && Array.isArray(feature.polylinePositions)) {
+          if (feature.polylinePositions.length > 3 && typeof feature.polylinePositions[0] === "number") {
+            let coords = [];
+            for (let j = 0; j < feature.polylinePositions.length; j += 3) {
+              coords.push([
+                feature.polylinePositions[j],
+                feature.polylinePositions[j+1],
+                feature.polylinePositions[j+2]
+              ]);
+            }
+            if (coords.length > 1) features.push(coords);
+          }
+        }
+      }
+      return features;
+    }
+
+    function createPolylinePrimitive(featuresArr, color, lineWidth) {
+      // Create Cesium polyline primitive from features
+      const geometryInstances = featuresArr.map(polyline => {
+        const positions = Cesium.Cartesian3.fromArray(polyline.flat());
+        return new Cesium.GeometryInstance({
+          geometry: new Cesium.PolylineGeometry({
+            positions,
+            width: lineWidth
+          }),
+          attributes: {
+            color: Cesium.ColorGeometryInstanceAttribute.fromColor(color)
+          }
+        });
+      });
+      return new Cesium.Primitive({
+        geometryInstances,
+        appearance: new Cesium.PolylineColorAppearance(),
+        asynchronous: false
+      });
+    }
+
+    let tilesetInstance;
+    const tileDataMap = new Map();
+
+    // === Load vector tileset and handle tile loading ===
+    Cesium.Cesium3DTileset.fromUrl('aggr/tileset.json')
+      .then(tileset => {
+        tilesetInstance = tileset;
+        cesiumViewer.scene.primitives.add(tileset);
+        cesiumViewer.zoomTo(tileset);
+        logAction('Tileset loaded', "ok");
+        tileset.tileLoad.addEventListener(tile => {
+          const features = extractPolylinesFromVectorTile(tile);
+          logAction(`Tile loaded, features found: ${features.length}`, "system");
+          tileDataMap.set(tile, {
+            features,
+            redPrimitive: null
+          });
+        });
+      })
+      .catch(err => {
+        logAction('Failed to load tileset: ' + err, "error");
+      });
+
+    let lastFpsUpdate = performance.now();
+    let fpsCounter = 0;
+    let vertexCount = 0;
+    let featureCount = 0;
+    let polylineCount = 0;
+
+    // === Render loop: update counters, LOD, and polylines ===
+    cesiumViewer.scene.postRender.addEventListener(() => {
+      const now = performance.now();
+      fpsCounter++;
+      if (now - lastFpsUpdate >= 1000) {
+        logAction("== fps update ==", "system")
+        fpsCounterValue.textContent = Math.round(fpsCounter * 1000 / (now - lastFpsUpdate));
+        vertexCounterValue.textContent = vertexCount;
+        featureCounterValue.textContent = featureCount;
+        lodCounterValue.textContent = lodFactor.toFixed(2);
+        polylineCounterValue.textContent = polylineCount;
+        fpsCounter = 0;
+        lastFpsUpdate = now;
+      }
+      // key value 
+      vertexCount = 0;
+      featureCount = 0;
+      polylineCount = 0;
+      if (autoLodToggle.checked) updateAutoLod();
+      if (autoLodToggle.checked) logAction("autoLodToggle.checked", "system");
+       
+
+      if (!tilesetInstance || !tilesetInstance._selectedTiles) return;
+      
+      const cameraHeight = cesiumViewer.camera.positionCartographic.height;
+      if (!cameraHeight) return;
+      const lod = autoLodToggle.checked ? calculateLodFactor(cameraHeight) : lodFactor;
+      const dynamicLineWidth = getDynamicLineWidth(cameraHeight);
+      tilesetInstance._selectedTiles.forEach(tile => {
+        const tileInfo = tileDataMap.get(tile);
+        if (!tileInfo) return;
+        const features = tileInfo.features;
+        featureCount += features.length;
+        polylineCount += features.length;
+        const processedFeatures = features.map(feature => {
+          const processed = processPolyline(feature, lod, cameraHeight);
+          vertexCount += processed.length;
+          return processed;
+        });
+        if (tileInfo.redPrimitive) cesiumViewer.scene.primitives.remove(tileInfo.redPrimitive);
+        tileInfo.redPrimitive = createPolylinePrimitive(processedFeatures, Cesium.Color.RED, dynamicLineWidth);
+        if (tileInfo.redPrimitive) cesiumViewer.scene.primitives.add(tileInfo.redPrimitive);
+      });
+      vertexCounterValue.textContent = vertexCount;
+      featureCounterValue.textContent = featureCount;
+      lodCounterValue.textContent = (autoLodToggle.checked ? lod : lodFactor).toFixed(2);
+      polylineCounterValue.textContent = polylineCount;
+    });
+
+    [
+      ['simplifyToggle', 'info', 'RDP simplification toggled'],
+      ['smoothingToggle', 'info', 'Smoothing toggled'],
+      ['mergeToggle', 'info', 'Merge by Distance toggled'],
+      ['mergeDistInput', 'info', 'Merge distance changed'],
+    ].forEach(([id, type, msg]) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', () => logAction(msg, type));
+        el.addEventListener('change', () => logAction(msg, type));
+      }
+    });
+  </script>
+</body>
+</html>
