@@ -217,32 +217,87 @@
       return polylines;
     }
 
-    // Filter vertices by fraction (LOD)
+    // Filter vertices by fraction (LOD) and Douglas-Peucker algorithm
     function filterVerticesByFraction(vertices, fraction) {
       if (fraction >= 0.999 || vertices.length < 3) return vertices;
-      const numToKeep = Math.max(2, Math.round(vertices.length * fraction));
-      if (numToKeep >= vertices.length) return vertices;
-      const step = vertices.length / numToKeep;
+
+      // Apply Douglas-Peucker algorithm
+      const simplified = simplifyDouglasPeucker(vertices, 1.0); // 1.0 is the tolerance
+
+      const numToKeep = Math.max(2, Math.round(simplified.length * fraction));
+      if (numToKeep >= simplified.length) return simplified;
+      const step = simplified.length / numToKeep;
       const result = [];
-      for (let i = 0; i < vertices.length; i += step) {
-        result.push(vertices[Math.floor(i)]);
+      for (let i = 0; i < simplified.length; i += step) {
+        result.push(simplified[Math.floor(i)]);
       }
       // Always keep first and last vertices
-      if (result[0] !== vertices[0]) result.unshift(vertices[0]);
-      if (result[result.length-1] !== vertices[vertices.length-1]) result.push(vertices[vertices.length-1]);
+      if (result[0] !== simplified[0]) result.unshift(simplified[0]);
+      if (result[result.length-1] !== simplified[simplified.length-1]) result.push(simplified[simplified.length-1]);
       return result;
     }
 
+    // Douglas-Peucker simplification algorithm
+    function simplifyDouglasPeucker(points, tolerance) {
+      const len = points.length;
+      if (len <= 2) {
+        return points;
+      }
+
+      let firstPoint = points[0];
+      let lastPoint = points[len - 1];
+      let index = -1;
+      let maxDist = 0;
+
+      for (let i = 1; i < len - 1; i++) {
+        let point = points[i];
+        let dist = perpendicularDistance(point, firstPoint, lastPoint);
+        if (dist > maxDist) {
+          index = i;
+          maxDist = dist;
+        }
+      }
+
+      if (maxDist > tolerance) {
+        let left = points.slice(0, index + 1);
+        let right = points.slice(index);
+        let leftSimplified = simplifyDouglasPeucker(left, tolerance);
+        let rightSimplified = simplifyDouglasPeucker(right, tolerance);
+
+        let result = leftSimplified.slice(0, leftSimplified.length - 1).concat(rightSimplified);
+        return result;
+      } else {
+        return [firstPoint, lastPoint];
+      }
+    }
+
+    // Helper function to calculate perpendicular distance
+    function perpendicularDistance(point, lineStart, lineEnd) {
+      let dx = lineEnd[0] - lineStart[0];
+      let dy = lineEnd[1] - lineStart[1];
+      let dz = lineEnd[2] - lineStart[2];
+
+      let area = Math.abs(dx * (lineStart[1] - point[1]) - dy * (lineStart[0] - point[0]));
+      let lineLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      return area / lineLength;
+    }
+
+
     // Create Cesium PolylinePrimitive from vertices
-    function createPolylinePrimitiveFromVertices(vertices, lineWidth) {
-      const positions = vertices.map(pt => Cesium.Cartesian3.fromElements(...pt));
-      return new Cesium.Primitive({
-        geometryInstances: new Cesium.GeometryInstance({
+    function createPolylinePrimitiveFromVertices(polylines, lineWidth) {
+      const geometryInstances = [];
+      for (const vertices of polylines) {
+        const positions = vertices.map(pt => Cesium.Cartesian3.fromElements(...pt));
+        geometryInstances.push(new Cesium.GeometryInstance({
           geometry: new Cesium.PolylineGeometry({
             positions,
             width: lineWidth
           })
-        }),
+        }));
+      }
+
+      return new Cesium.Primitive({
+        geometryInstances: geometryInstances,
         appearance: new Cesium.PolylineColorAppearance(),
         asynchronous: false
       });
@@ -440,42 +495,54 @@
       // Auto mode: update fraction if enabled
       if (autoMode) {
         updateAutoVertexFraction();
-        tileDataMap.forEach(tileInfo => tileInfo._lastVertexFraction = undefined);
       }
 
       // Count and render polylines and vertices
       let vertexCount = 0, featureCount = 0, polylineCount = 0;
       if (!tilesetInstance || !tilesetInstance._selectedTiles) return;
+
       tilesetInstance._selectedTiles.forEach(tile => {
         const tileInfo = tileDataMap.get(tile);
         if (!tileInfo || !Array.isArray(tileInfo.features) || tileInfo.features.length === 0) return;
-        // Group by polylineId
-        const groups = groupSegmentsById(tileInfo.features);
-        // For each polylineId, efficiently join segments into chains
-        let allPrimitives = [];
-        for (const segs of groups) {
-          const polylines = fastJoinSegments(segs);
-          for (const polyline of polylines) {
-            const simplified = filterVerticesByFraction(polyline, vertexFraction);
-            if (simplified.length < 2) continue;
-            featureCount += 1;
-            polylineCount += 1;
-            vertexCount += simplified.length;
-            allPrimitives.push(createPolylinePrimitiveFromVertices(simplified, 8.0));
+
+        // Check if vertexFraction has changed
+        if (tileInfo._lastVertexFraction !== vertexFraction) {
+          tileInfo._lastVertexFraction = vertexFraction;
+
+          // Group by polylineId
+          const groups = groupSegmentsById(tileInfo.features);
+
+          // For each polylineId, efficiently join segments into chains
+          const allPolylines = [];
+          for (const segs of groups) {
+            const polylines = fastJoinSegments(segs);
+            for (const polyline of polylines) {
+              const simplified = filterVerticesByFraction(polyline, vertexFraction);
+              if (simplified.length < 2) continue;
+              allPolylines.push(simplified);
+            }
           }
-        }
-        // Remove previous primitives
-        if (tileInfo.primitive) {
-          if (Array.isArray(tileInfo.primitive)) {
-            tileInfo.primitive.forEach(p => cesiumViewer.scene.primitives.remove(p));
-          } else {
+
+          // Remove previous primitives
+          if (tileInfo.primitive) {
             cesiumViewer.scene.primitives.remove(tileInfo.primitive);
           }
+
+          // Create and add new primitive ( объединяем все полилинии в один примитив )
+          tileInfo.primitive = createPolylinePrimitiveFromVertices(allPolylines, 8.0);
+          cesiumViewer.scene.primitives.add(tileInfo.primitive);
+
+          tileInfo._lastSimplified = allPolylines; // Cache simplified polylines
         }
-        tileInfo.primitive = allPrimitives;
-        // Add new primitives
-        allPrimitives.forEach(p => cesiumViewer.scene.primitives.add(p));
+
+        // Use cached simplified polylines
+        if (tileInfo._lastSimplified) {
+          featureCount += tileInfo._lastSimplified.length;
+          polylineCount += tileInfo._lastSimplified.length;
+          vertexCount += tileInfo._lastSimplified.reduce((sum, polyline) => sum + polyline.length, 0);
+        }
       });
+
       vertexCounterValue.textContent = vertexCount;
       featureCounterValue.textContent = featureCount;
       polylineCounterValue.textContent = polylineCount;
