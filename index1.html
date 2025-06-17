@@ -30,8 +30,23 @@
       box-shadow: 0 0 8px #0008;
       min-width: 210px;
     }
-    #lodSettings input[type="range"] { width: 100%; }
+    #lodSettings input[type="number"] { width: 60px; }
     #lodSettings label { font-weight: bold; }
+    #autoBtn {
+      margin-left: 10px;
+      font-size: 12px;
+      padding: 2px 10px;
+      border-radius: 3px;
+      border: 1px solid #444;
+      background: #23232a;
+      color: #fff;
+      cursor: pointer;
+    }
+    #autoBtn.active {
+      background: #08f;
+      color: #fff;
+      border: 1px solid #09f;
+    }
   </style>
 </head>
 <body>
@@ -42,14 +57,19 @@
   <div id="polylineCounter" class="counter">Polylines: <span id="polylineVal">-</span></div>
   <div id="terminalLog"><div id="terminalTitle">[ ACTION LOG ]</div><div id="terminalOutput"></div></div>
   <div id="lodSettings">
-    <label for="vertexFraction">Процент вершин: <span id="vertexFractionVal">1.00</span></label>
-    <input type="range" min="0.01" max="1.0" step="0.01" value="1.0" id="vertexFraction" />
+    <label for="vertexFraction">Vertex percent:</label>
+    <input type="number" min="0.01" max="1.0" step="0.01" value="1.00" id="vertexFraction" />
+    <button id="autoBtn" type="button">Auto</button>
+    <span id="vertexFractionVal" style="margin-left:10px;">1.00</span>
     <div style="margin-top:8px">
-      <div>Высота камеры: <span id="cameraHeightVal">-</span> м</div>
+      <div>Camera height: <span id="cameraHeightVal">-</span> m</div>
     </div>
   </div>
   <script>
+    // Output element for terminal log
     const terminalOutput = document.getElementById('terminalOutput');
+
+    // Log a message to the terminal log
     function logAction(message, type="system") {
       const span = document.createElement('span');
       span.className = "log-" + type;
@@ -68,38 +88,84 @@
     const fpsCounterValue = document.getElementById('fpsVal');
     let lastFpsUpdate = performance.now(), fpsCounter = 0;
 
-    // Новый контрол для вершин
+    // Controls for vertex fraction
     const vertexFractionInput = document.getElementById('vertexFraction');
     const vertexFractionVal = document.getElementById('vertexFractionVal');
     const cameraHeightVal = document.getElementById('cameraHeightVal');
+    const autoBtn = document.getElementById('autoBtn');
     let vertexFraction = parseFloat(vertexFractionInput.value);
+    let autoMode = false;
+
+    // Update display for vertex fraction value
+    function updateVertexFractionDisplay() {
+      vertexFractionVal.textContent = (+vertexFraction).toFixed(2);
+      vertexFractionInput.value = (+vertexFraction).toFixed(2);
+    }
 
     vertexFractionInput.addEventListener('input', function() {
-      vertexFraction = parseFloat(this.value);
-      vertexFractionVal.textContent = vertexFraction.toFixed(2);
+      let val = parseFloat(this.value);
+      if (isNaN(val)) val = 1.0;
+      if (val < 0.01) val = 0.01;
+      if (val > 1.0) val = 1.0;
+      vertexFraction = val;
+      autoMode = false;
+      autoBtn.classList.remove('active');
+      updateVertexFractionDisplay();
       tileDataMap.forEach(tileInfo => tileInfo._lastVertexFraction = undefined);
     });
 
+    autoBtn.addEventListener('click', function() {
+      autoMode = !autoMode;
+      if (autoMode) {
+        this.classList.add('active');
+        updateAutoVertexFraction();
+      } else {
+        this.classList.remove('active');
+      }
+      tileDataMap.forEach(tileInfo => tileInfo._lastVertexFraction = undefined);
+    });
+
+    // Automatically set vertexFraction based on camera height
+    function updateAutoVertexFraction() {
+      if (!autoMode) return;
+      let cameraHeight = 0;
+      try {
+        const globePos = cesiumViewer.camera.positionCartographic;
+        cameraHeight = globePos ? globePos.height : 0;
+      } catch (e) {}
+      // Example auto formula: fraction decreases as camera height increases
+      // 0.01 for 50km+, 0.05 for 10km+, 0.5 for 2km+, 1.0 for low heights
+      let f = 1.0;
+      if (cameraHeight > 50000) f = 0.01;
+      else if (cameraHeight > 10000) f = 0.05;
+      else if (cameraHeight > 2000) f = 0.5;
+      else f = 1.0;
+      vertexFraction = f;
+      updateVertexFractionDisplay();
+    }
+
+    // Check if a point is valid (3 numeric coordinates)
     function isValidPoint(pt) {
       return Array.isArray(pt) && pt.length === 3 &&
         pt.every(v => typeof v === "number" && Number.isFinite(v));
     }
+    // Check if a feature is valid (pair of valid points)
     function isValidFeature(feature) {
       return feature && Array.isArray(feature.points) && feature.points.length === 2 && isValidPoint(feature.points[0]) && isValidPoint(feature.points[1]);
     }
 
-    // Группируем по polyline_id (или любому group id) — возвращает массив массивов сегментов
+    // Group segments by polyline_id (or other group id), returns array of arrays of segments
     function groupSegmentsById(features) {
       const groups = {};
       for (const feature of features) {
-        const id = feature.polyline_id || 0; // если id нет, все в одну группу
+        const id = feature.polylineId || feature.polyline_id || 0; // all in one group if no id
         if (!groups[id]) groups[id] = [];
         groups[id].push(feature.points);
       }
       return Object.values(groups);
     }
 
-    // Быстрое объединение сегментов в цепочки (эффективно для больших наборов)
+    // Efficiently join segments into chains (fast for large sets)
     function fastJoinSegments(segments) {
       const endpointMap = new Map();
       const pointKey = pt => pt.join(',');
@@ -118,7 +184,7 @@
         let line = [segments[i][0], segments[i][1]];
         used[i] = true;
 
-        // Вперёд
+        // Forward
         while (true) {
           const last = line[line.length - 1];
           const k = pointKey(last);
@@ -132,7 +198,7 @@
             line.push(segments[nextIdx][0]);
           }
         }
-        // Назад
+        // Backward
         while (true) {
           const first = line[0];
           const k = pointKey(first);
@@ -151,7 +217,7 @@
       return polylines;
     }
 
-    // Фильтруем вершины по fraction (LOD)
+    // Filter vertices by fraction (LOD)
     function filterVerticesByFraction(vertices, fraction) {
       if (fraction >= 0.999 || vertices.length < 3) return vertices;
       const numToKeep = Math.max(2, Math.round(vertices.length * fraction));
@@ -161,12 +227,13 @@
       for (let i = 0; i < vertices.length; i += step) {
         result.push(vertices[Math.floor(i)]);
       }
-      // Обязательно первая и последняя вершина
+      // Always keep first and last vertices
       if (result[0] !== vertices[0]) result.unshift(vertices[0]);
       if (result[result.length-1] !== vertices[vertices.length-1]) result.push(vertices[vertices.length-1]);
       return result;
     }
 
+    // Create Cesium PolylinePrimitive from vertices
     function createPolylinePrimitiveFromVertices(vertices, lineWidth) {
       const positions = vertices.map(pt => Cesium.Cartesian3.fromElements(...pt));
       return new Cesium.Primitive({
@@ -181,8 +248,8 @@
       });
     }
 
-    // === Парсер GLB, который возвращает features с polyline_id ===
-    async function extractLinesFromGLB(arrayBuffer) {
+    // === GLB parser that returns features with polyline_id ===
+    async function extractLinesFromGlb(arrayBuffer) {
       try {
         const dv = new DataView(arrayBuffer);
         if (dv.getUint32(0, true) !== 0x46546C67) throw new Error("Not a GLB file");
@@ -199,6 +266,7 @@
           offset += 8 + chunkLength;
         }
         if (!json || !bin) throw new Error("GLB missing JSON or BIN chunk");
+
         function getBufferView(viewIdx) {
           const bv = json.bufferViews[viewIdx];
           return bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);
@@ -245,13 +313,14 @@
             xyz[0] * m[2] + xyz[1] * m[6] + xyz[2] * m[10] + m[14]
           ];
         }
-        // Собираем features с polyline_id = meshIdx
+
+        // Collect features with polyline_id = meshIdx
         const features = [];
         if (!json.meshes) return features;
         for (let meshIdx = 0; meshIdx < json.meshes.length; meshIdx++) {
           const mesh = json.meshes[meshIdx];
           for (const prim of mesh.primitives) {
-            if (prim.mode !== 1) continue;
+            if (prim.mode !== 1) continue; // Only lines
             const posAcc = getAccessor(prim.attributes.POSITION);
             let idxAcc = null;
             if (prim.indices !== undefined) idxAcc = getAccessor(prim.indices);
@@ -271,7 +340,7 @@
                   posAcc.array[ib * 3 + 1],
                   posAcc.array[ib * 3 + 2]
                 ];
-                features.push({ points: [applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)], polyline_id: meshIdx });
+                features.push({ points: [applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)], polylineId: meshIdx });
               }
             } else {
               for (let i = 0; i < posAcc.count - 1; i += 2) {
@@ -285,7 +354,7 @@
                   posAcc.array[(i + 1) * 3 + 1],
                   posAcc.array[(i + 1) * 3 + 2]
                 ];
-                features.push({ points: [applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)], polyline_id: meshIdx });
+                features.push({ points: [applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)], polylineId: meshIdx });
               }
             }
           }
@@ -297,6 +366,7 @@
       }
     }
 
+    // Extract polyline features from a vector tile (GLB)
     async function extractPolylinesFromVectorTile(tile) {
       let glbUrl = null;
       if (tile.content && tile.content._resource && tile.content._resource._resource && tile.content._resource._resource.url) {
@@ -321,7 +391,7 @@
           return [];
         }
         const arrayBuffer = await response.arrayBuffer();
-        const features = await extractLinesFromGLB(arrayBuffer);
+        const features = await extractLinesFromGlb(arrayBuffer);
         return features;
       } catch (e) {
         logAction('GLB parse error: ' + e, 'error');
@@ -351,7 +421,7 @@
       });
 
     cesiumViewer.scene.postRender.addEventListener(() => {
-      // FPS Counter
+      // FPS counter update
       fpsCounter++;
       const now = performance.now();
       if (now - lastFpsUpdate >= 1000) {
@@ -359,22 +429,29 @@
         lastFpsUpdate = now;
         fpsCounter = 0;
       }
-      // Camera height
+      // Update camera height display
       let cameraHeight = 0;
       try {
         const globePos = cesiumViewer.camera.positionCartographic;
         cameraHeight = globePos ? globePos.height : 0;
       } catch (e) {}
       cameraHeightVal.textContent = cameraHeight ? Math.round(cameraHeight) : '-';
-      // Polylines and vertices
+
+      // Auto mode: update fraction if enabled
+      if (autoMode) {
+        updateAutoVertexFraction();
+        tileDataMap.forEach(tileInfo => tileInfo._lastVertexFraction = undefined);
+      }
+
+      // Count and render polylines and vertices
       let vertexCount = 0, featureCount = 0, polylineCount = 0;
       if (!tilesetInstance || !tilesetInstance._selectedTiles) return;
       tilesetInstance._selectedTiles.forEach(tile => {
         const tileInfo = tileDataMap.get(tile);
         if (!tileInfo || !Array.isArray(tileInfo.features) || tileInfo.features.length === 0) return;
-        // Группируем по polyline_id
+        // Group by polylineId
         const groups = groupSegmentsById(tileInfo.features);
-        // Для каждого polyline_id — объединяем цепочки эффективно
+        // For each polylineId, efficiently join segments into chains
         let allPrimitives = [];
         for (const segs of groups) {
           const polylines = fastJoinSegments(segs);
@@ -387,7 +464,7 @@
             allPrimitives.push(createPolylinePrimitiveFromVertices(simplified, 8.0));
           }
         }
-        // Удаляем старые примитивы
+        // Remove previous primitives
         if (tileInfo.primitive) {
           if (Array.isArray(tileInfo.primitive)) {
             tileInfo.primitive.forEach(p => cesiumViewer.scene.primitives.remove(p));
@@ -396,7 +473,7 @@
           }
         }
         tileInfo.primitive = allPrimitives;
-        // Добавляем новые
+        // Add new primitives
         allPrimitives.forEach(p => cesiumViewer.scene.primitives.add(p));
       });
       vertexCounterValue.textContent = vertexCount;
