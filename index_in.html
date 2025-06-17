@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cesium 3D Tiles Vector LOD MVP</title>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Cesium.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: monospace; }
+    .counter { position: absolute; left: 10px; color: #fff; text-shadow: 0 0 4px #000; z-index: 1000; font-size: 14px; }
+    #fpsCounter { top: 10px; }
+    #vertexCounter { top: 30px; }
+    #featureCounter { top: 50px; }
+    #polylineCounter { top: 70px; }
+    #terminalLog { position: absolute; left: 0; bottom: 0; width: 480px; max-width: 90vw; height: 180px; background: rgba(20,20,30,0.80); color: #0f0; font-family: monospace; font-size: 13px; border-radius: 8px 8px 0 0; box-shadow: 0 0 20px #0009; z-index: 1200; padding: 10px 8px 7px 12px; overflow-y: auto; }
+    #terminalTitle { font-size: 13px; color: #fff6; margin-bottom: 4px; font-weight: bold; }
+    .log-error { color: #f44; }
+    .log-system { color: #9ff; }
+    .log-debug { color: #aaa; }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+  <div id="fpsCounter" class="counter">FPS: <span id="fpsVal">-</span></div>
+  <div id="vertexCounter" class="counter">Vertices: <span id="vertexVal">-</span></div>
+  <div id="featureCounter" class="counter">Features: <span id="featureVal">-</span></div>
+  <div id="polylineCounter" class="counter">Polylines: <span id="polylineVal">-</span></div>
+  <div id="terminalLog"><div id="terminalTitle">[ ACTION LOG ]</div><div id="terminalOutput"></div></div>
+  <script>
+    const terminalOutput = document.getElementById('terminalOutput');
+    function logAction(message, type="system") {
+      const span = document.createElement('span');
+      span.className = "log-" + type;
+      span.textContent = `[${(new Date()).toLocaleTimeString()}] ` + message;
+      terminalOutput.appendChild(span);
+      terminalOutput.appendChild(document.createElement('br'));
+      terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    }
+
+    const cesiumViewer = new Cesium.Viewer('cesiumContainer');
+    let tilesetInstance;
+    const tileDataMap = new Map();
+    const vertexCounterValue = document.getElementById('vertexVal');
+    const featureCounterValue = document.getElementById('featureVal');
+    const polylineCounterValue = document.getElementById('polylineVal');
+    const fpsCounterValue = document.getElementById('fpsVal');
+    let lastFpsUpdate = performance.now(), fpsCounter = 0;
+
+    function isValidPoint(pt) {
+      return Array.isArray(pt) && pt.length === 3 &&
+        pt.every(v => typeof v === "number" && Number.isFinite(v));
+    }
+
+    function isValidLine(line) {
+      return Array.isArray(line) &&
+        line.length === 2 &&
+        isValidPoint(line[0]) &&
+        isValidPoint(line[1]);
+    }
+
+    async function extractLinesFromGLB(arrayBuffer) {
+      try {
+        const dv = new DataView(arrayBuffer);
+        if (dv.getUint32(0, true) !== 0x46546C67) throw new Error("Not a GLB file");
+        let offset = 12, json = null, bin = null;
+        while (offset < dv.byteLength) {
+          const chunkLength = dv.getUint32(offset, true);
+          const chunkType = dv.getUint32(offset + 4, true);
+          if (chunkType === 0x4E4F534A) {
+            const jsonText = new TextDecoder().decode(new Uint8Array(arrayBuffer, offset + 8, chunkLength));
+            json = JSON.parse(jsonText);
+          } else if (chunkType === 0x004E4942) {
+            bin = new Uint8Array(arrayBuffer, offset + 8, chunkLength);
+          }
+          offset += 8 + chunkLength;
+        }
+        if (!json || !bin) throw new Error("GLB missing JSON or BIN chunk");
+        function getBufferView(viewIdx) {
+          const bv = json.bufferViews[viewIdx];
+          return bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);
+        }
+        function getAccessor(accIdx) {
+          const acc = json.accessors[accIdx];
+          const bv = getBufferView(acc.bufferView);
+          const TypedArray = (() => {
+            switch (acc.componentType) {
+              case 5120: return Int8Array;
+              case 5121: return Uint8Array;
+              case 5122: return Int16Array;
+              case 5123: return Uint16Array;
+              case 5125: return Uint32Array;
+              case 5126: return Float32Array;
+            }
+          })();
+          const numComponents = (() => {
+            switch (acc.type) {
+              case "SCALAR": return 1;
+              case "VEC2": return 2;
+              case "VEC3": return 3;
+              case "VEC4": return 4;
+              case "MAT4": return 16;
+            }
+          })();
+          const array = new TypedArray(bv.buffer, bv.byteOffset + (acc.byteOffset || 0), acc.count * numComponents);
+          return { array, count: acc.count, numComponents };
+        }
+        function getNodeMatrix(node) {
+          if (node.matrix) return node.matrix;
+          let m = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+          if (node.translation) {
+            m[12] = node.translation[0];
+            m[13] = node.translation[1];
+            m[14] = node.translation[2];
+          }
+          return m;
+        }
+        function applyMatrixToPoint(xyz, m) {
+          return [
+            xyz[0] * m[0] + xyz[1] * m[4] + xyz[2] * m[8]  + m[12],
+            xyz[0] * m[1] + xyz[1] * m[5] + xyz[2] * m[9]  + m[13],
+            xyz[0] * m[2] + xyz[1] * m[6] + xyz[2] * m[10] + m[14]
+          ];
+        }
+        const lines = [];
+        if (!json.meshes) return lines;
+        for (let meshIdx = 0; meshIdx < json.meshes.length; meshIdx++) {
+          const mesh = json.meshes[meshIdx];
+          for (const prim of mesh.primitives) {
+            if (prim.mode !== 1) continue;
+            const posAcc = getAccessor(prim.attributes.POSITION);
+            let idxAcc = null;
+            if (prim.indices !== undefined) idxAcc = getAccessor(prim.indices);
+            let matrix = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+            const nodeIdx = json.nodes ? json.nodes.findIndex(n => n.mesh === meshIdx) : -1;
+            if (nodeIdx >= 0) matrix = getNodeMatrix(json.nodes[nodeIdx]);
+            if (idxAcc) {
+              for (let i = 0; i < idxAcc.array.length; i += 2) {
+                const ia = idxAcc.array[i], ib = idxAcc.array[i + 1];
+                const a = [
+                  posAcc.array[ia * 3 + 0],
+                  posAcc.array[ia * 3 + 1],
+                  posAcc.array[ia * 3 + 2]
+                ];
+                const b = [
+                  posAcc.array[ib * 3 + 0],
+                  posAcc.array[ib * 3 + 1],
+                  posAcc.array[ib * 3 + 2]
+                ];
+                lines.push([applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)]);
+              }
+            } else {
+              for (let i = 0; i < posAcc.count - 1; i += 2) {
+                const a = [
+                  posAcc.array[i * 3 + 0],
+                  posAcc.array[i * 3 + 1],
+                  posAcc.array[i * 3 + 2]
+                ];
+                const b = [
+                  posAcc.array[(i + 1) * 3 + 0],
+                  posAcc.array[(i + 1) * 3 + 1],
+                  posAcc.array[(i + 1) * 3 + 2]
+                ];
+                lines.push([applyMatrixToPoint(a, matrix), applyMatrixToPoint(b, matrix)]);
+              }
+            }
+          }
+        }
+        return lines.filter(isValidLine);
+      } catch(e) {
+        logAction('GLB parse error: ' + e, 'error');
+        return [];
+      }
+    }
+
+    async function extractPolylinesFromVectorTile(tile) {
+      let glbUrl = null;
+      if (tile.content && tile.content._resource && tile.content._resource._resource && tile.content._resource._resource.url) {
+        glbUrl = tile.content._resource._resource.url;
+      }
+      if (!glbUrl && tile.content && tile.content.url) {
+        glbUrl = tile.content.url;
+      }
+      if (!glbUrl) {
+        logAction('No GLB url for tile', 'error');
+        return [];
+      }
+      logAction('GLB url: ' + glbUrl, 'debug');
+      if (!glbUrl.toLowerCase().endsWith('.glb')) {
+        logAction('Skip non-GLB file: ' + glbUrl, 'debug');
+        return [];
+      }
+      try {
+        const response = await fetch(glbUrl);
+        if (!response.ok) {
+          logAction('GLB fetch error: HTTP ' + response.status, 'error');
+          return [];
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const lines = await extractLinesFromGLB(arrayBuffer);
+        return lines;
+      } catch (e) {
+        logAction('GLB parse error: ' + e, 'error');
+        return [];
+      }
+    }
+
+    function createPolylinePrimitive(lines, color, lineWidth) {
+      const geometryInstances = [];
+      lines.forEach((line, idx) => {
+        if (isValidLine(line)) {
+          const positions = [
+            Cesium.Cartesian3.fromElements(...line[0]),
+            Cesium.Cartesian3.fromElements(...line[1])
+          ];
+          geometryInstances.push(new Cesium.GeometryInstance({
+            geometry: new Cesium.PolylineGeometry({
+              positions,
+              width: lineWidth
+            }),
+            attributes: {
+              color: Cesium.ColorGeometryInstanceAttribute.fromColor(color)
+            }
+          }));
+        } else {
+          console.error('Invalid line for primitive:', line, 'at index', idx);
+          logAction('Invalid line skipped at index ' + idx, 'error');
+        }
+      });
+      if (geometryInstances.length === 0) return null;
+      return new Cesium.Primitive({
+        geometryInstances,
+        appearance: new Cesium.PolylineColorAppearance(),
+        asynchronous: false
+      });
+    }
+
+    Cesium.Cesium3DTileset.fromUrl('aggr/tileset.json')
+      .then(tileset => {
+        tilesetInstance = tileset;
+        cesiumViewer.scene.primitives.add(tileset);
+        cesiumViewer.zoomTo(tileset);
+        logAction('Tileset loaded', "system");
+        tileset.tileLoad.addEventListener(async tile => {
+          const features = await extractPolylinesFromVectorTile(tile);
+          logAction(`Tile loaded, features found: ${features.length}`, "system");
+          tileDataMap.set(tile, {
+            features,
+            primitive: null
+          });
+        });
+      })
+      .catch(err => {
+        logAction('Failed to load tileset: ' + err, "error");
+      });
+
+    cesiumViewer.scene.postRender.addEventListener(() => {
+      // FPS Counter
+      fpsCounter++;
+      const now = performance.now();
+      if (now - lastFpsUpdate >= 1000) {
+        fpsCounterValue.textContent = Math.round(fpsCounter * 1000 / (now - lastFpsUpdate));
+        lastFpsUpdate = now;
+        fpsCounter = 0;
+      }
+      // Polylines and vertices
+      let vertexCount = 0, featureCount = 0, polylineCount = 0;
+      if (!tilesetInstance || !tilesetInstance._selectedTiles) return;
+      tilesetInstance._selectedTiles.forEach(tile => {
+        const tileInfo = tileDataMap.get(tile);
+        if (!tileInfo || !Array.isArray(tileInfo.features) || tileInfo.features.length === 0) return;
+        const lines = tileInfo.features.filter(isValidLine);
+        featureCount += lines.length;
+        polylineCount += lines.length;
+        vertexCount += lines.length * 2;
+        if (tileInfo.primitive) cesiumViewer.scene.primitives.remove(tileInfo.primitive);
+        tileInfo.primitive = createPolylinePrimitive(lines, Cesium.Color.YELLOW, 8.0);
+        if (tileInfo.primitive) cesiumViewer.scene.primitives.add(tileInfo.primitive);
+      });
+      vertexCounterValue.textContent = vertexCount;
+      featureCounterValue.textContent = featureCount;
+      polylineCounterValue.textContent = polylineCount;
+    });
+  </script>
+</body>
+</html>
